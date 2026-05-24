@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>操作系统模拟器 Web版</title>
+    <!-- 引入 Vue 和 TailwindCSS 提升开发速度和界面颜值 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-6">
+    <div id="app" class="max-w-7xl mx-auto space-y-6">
+        <h1 class="text-3xl font-bold text-center text-blue-600">进程调度与内存管理模拟器 ⚙️</h1>
+        
+        <!-- 操作面板 -->
+        <div class="bg-white p-4 rounded shadow grid grid-cols-4 gap-4 items-end">
+            <div>
+                <label class="block text-sm font-medium text-gray-700">总运行时间</label>
+                <input v-model="newProcess.totalTime" type="number" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">优先级(越小越高)</label>
+                <input v-model="newProcess.priority" type="number" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700">内存需求(KB)</label>
+                <input v-model="newProcess.memoryNeed" type="number" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+            </div>
+            <button @click="createProcess" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
+                + 创建新进程
+            </button>
+        </div>
+
+        <!-- 控制和算法面板 -->
+        <div class="bg-white p-4 rounded shadow flex justify-between items-center mb-4">
+            <div class="font-bold text-lg text-blue-600">当前高度算法：{{ currentStrategy }}</div>
+            <div class="space-x-2">
+                <button @click="changeStrategy('FCFS')" class="bg-gray-200 hover:bg-black hover:text-white py-1 px-3 rounded">FCFS (先来先服务)</button>
+                <button @click="changeStrategy('RR')" class="bg-gray-200 hover:bg-black hover:text-white py-1 px-3 rounded">RR (时间片轮转)</button>
+                <button @click="changeStrategy('HPF')" class="bg-gray-200 hover:bg-black hover:text-white py-1 px-3 rounded">HPF (高优先级优先)</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-6">
+            <!-- 进程队列监控 -->
+            <div class="bg-white p-4 rounded shadow">
+                <h2 class="text-xl font-bold mb-4 border-b pb-2">系统进程调度池 (监控与撤销)</h2>
+                <ul>
+                    <li v-for="p in readyQueue" :key="p.pid" class="p-4 border-b mb-2 bg-gray-50 rounded shadow-sm">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="font-bold text-lg" :class="p.state===3?'text-green-600':'text-blue-600'">
+                                PID: {{ p.pid }} [{{ p.state === 3 ? '正在运行(CPU中)' : '就绪排队' }}]
+                            </span>
+                            <!-- 撤销按钮 -->
+                            <button @click="killProcess(p.pid)" class="bg-red-500 hover:bg-red-600 text-white text-xs py-1 px-2 rounded">
+                                强制撤销(Kill)
+                            </button>
+                        </div>
+                        <div class="text-sm text-gray-700">总需时间: {{ p.totalTime }} s | 已运行: {{ p.runningTime }} s | 优先级: {{ p.priority }}</div>
+                        <!-- 信箱展示 -->
+                        <div v-if="p.messages && p.messages.length > 0" class="mt-2 text-xs bg-yellow-100 p-2 rounded border border-yellow-300">
+                            <strong>收到通信消息:</strong>
+                            <div v-for="(msg, i) in p.messages" :key="i">📨 {{ msg }}</div>
+                        </div>
+                    </li>
+                    <li v-if="readyQueue.length === 0" class="text-gray-400">目前没有就绪的进程...</li>
+                </ul>
+
+                <!-- 进程通信测试面板 -->
+                <div class="mt-6 border-t pt-4">
+                    <h3 class="font-bold text-gray-700 mb-2">进程间通信 (IPC)</h3>
+                    <div class="flex space-x-2">
+                        <input v-model="msgTarget" type="number" placeholder="目标PID" class="border rounded p-1 w-20 text-sm">
+                        <input v-model="msgContent" type="text" placeholder="发送内容" class="border rounded p-1 w-full text-sm">
+                        <button @click="sendMessage" class="bg-green-500 hover:bg-green-600 text-white text-sm py-1 px-3 rounded">发送</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 内存状态监控 -->
+            <div class="bg-white p-4 rounded shadow">
+                <h2 class="text-xl font-bold mb-4 border-b pb-2">内存分配表 (首次适应)</h2>
+                <div class="flex flex-col space-y-2">
+                    <div v-for="(block, index) in memoryBlocks" :key="index" 
+                         :class="['p-3 rounded text-white flex justify-between', block.status === 'unallocated' ? 'bg-green-500' : 'bg-red-500']">
+                        <span>地址: {{ block.startAddress }}</span>
+                        <span>大小: {{ block.length }} KB</span>
+                        <span class="font-bold">{{ block.status === 'unallocated' ? '空闲' : '占用(PID: ' + block.status + ')' }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                const newProcess = ref({ totalTime: 10, priority: 1, memoryNeed: 64, needA:0, needB:0, needC:0 });
+                const readyQueue = ref([]); 
+                const memoryBlocks = ref([]);
+                
+                const msgTarget = ref('');
+                const msgContent = ref('');
+                const currentStrategy = ref('RR');
+
+                const createProcess = async () => {
+                    try {
+                        const response = await fetch('/api/process', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(newProcess.value)
+                        });
+                        const res = await response.json();
+                        if (!res.success) {
+                            alert(res.message);
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    }
+                };
+
+                const killProcess = async (pid) => {
+                    try {
+                        await fetch('/api/process/' + pid, { method: 'DELETE' });
+                    } catch (e) {
+                        console.error(e);
+                    }
+                };
+
+                const sendMessage = async () => {
+                    if(!msgTarget.value || !msgContent.value) return;
+                    try {
+                        const params = new URLSearchParams({ toPid: msgTarget.value, message: msgContent.value });
+                        await fetch('/api/message?' + params, { method: 'POST' });
+                        msgContent.value = ''; // 清空输入框
+                    } catch(e) {
+                        console.error(e);
+                    }
+                };
+
+                const changeStrategy = async (algo) => {
+                    try {
+                        const params = new URLSearchParams({ algo: algo });
+                        await fetch('/api/strategy?' + params, { method: 'POST' });
+                    } catch(e) {
+                        console.error(e);
+                    }
+                };
+
+                // 启动定时器，每秒轮询后端获取最新的 OS 状态
+                onMounted(() => {
+                    setInterval(async () => {
+                        try {
+                            const response = await fetch('/api/state');
+                            const state = await response.json();
+                            readyQueue.value = state.readyQueue;
+                            memoryBlocks.value = state.memoryBlocks;
+                            currentStrategy.value = state.currentStrategy;
+                        } catch (e) {
+                            console.error("无法连接到后台", e);
+                        }
+                    }, 500); // 0.5秒刷新一次前端以获取平滑状态
+                });
+
+                return {
+                    newProcess,
+                    readyQueue,
+                    memoryBlocks,
+                    msgTarget,
+                    msgContent,
+                    currentStrategy,
+                    createProcess,
+                    killProcess,
+                    sendMessage,
+                    changeStrategy
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
